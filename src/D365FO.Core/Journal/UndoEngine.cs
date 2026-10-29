@@ -271,7 +271,13 @@ public static class UndoEngine
             var msg = (string?)result["message"] ?? string.Empty;
             return (false, $"{code}: {msg}", null, null);
         }
-        return (true, null, detail, null);
+
+        // The provider took the object out (or put it back); the project has to follow, as it
+        // does for a disk write. A bridge create made with --project records that registration.
+        string? rnrWarn = null;
+        if (entry.RnrProjDelta is not null && !RnrProjRegistry.Invert(entry.RnrProjDelta))
+            rnrWarn = $".rnrproj entry for '{entry.ObjectName}' could not be reverted automatically — check {entry.RnrProjDelta.RnrProjPath}.";
+        return (true, null, detail, rnrWarn);
     }
 
     /// <summary>Build <see cref="BridgeOptions"/> from the unified config resolver.</summary>

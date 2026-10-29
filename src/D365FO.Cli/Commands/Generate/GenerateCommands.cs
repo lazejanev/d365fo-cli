@@ -202,18 +202,21 @@ internal static class GenerateInstaller
     /// <c>--project</c> for an object the metadata provider created: nothing went through the
     /// file writer, so register it here from its kind and name.
     /// </summary>
-    private static void RegisterBridgeCreate(GroundingGate.GateResult gate, string axKind, string name, string model)
+    /// <returns>What changed in the project, for the journal entry, or null when nothing did.</returns>
+    private static D365FO.Core.Journal.RnrProjDelta? RegisterBridgeCreate(GroundingGate.GateResult gate, string axKind, string name, string model)
     {
-        if (gate.Project is null) return;
+        if (gate.Project is null) return null;
         try
         {
             var reg = D365FO.Core.Journal.RnrProjRegistry.RegisterInProject(
                 gate.Project, D365FO.Core.ObjectTypes.ObjectTypeRegistry.Subfolder(axKind), name, model);
             gate.ProjectItems.Add(new { include = reg.Include, added = reg.Added });
+            return reg.Delta;
         }
         catch (Exception ex)
         {
             gate.Warnings.Add($"--project: not registered in {System.IO.Path.GetFileName(gate.Project)}: {ex.Message}");
+            return null;
         }
     }
 
@@ -344,7 +347,13 @@ internal static class GenerateInstaller
     /// calling the bridge's <c>deleteObject</c>. Never lets a journal failure fail the
     /// create it is recording.
     /// </summary>
-    private static void RecordBridgeCreate(string axKind, string name, string model)
+    /// <remarks>
+    /// Written after the <c>--project</c> registration rather than inside <see cref="PlanInstall"/>,
+    /// so the entry carries that project change and <c>undo</c> takes the object out of the
+    /// project too. Recorded before, it had no delta, and undoing a bridge create left a
+    /// <c>&lt;Content&gt;</c> entry pointing at an object that no longer existed.
+    /// </remarks>
+    private static void RecordBridgeCreate(string axKind, string name, string model, D365FO.Core.Journal.RnrProjDelta? projectDelta)
     {
         try
         {
@@ -362,7 +371,7 @@ internal static class GenerateInstaller
                 TargetPath: null,
                 PreImage: null,
                 IsTombstone: true,
-                RnrProjDelta: null));
+                RnrProjDelta: projectDelta));
         }
         catch { /* best-effort */ }
     }
@@ -384,11 +393,7 @@ internal static class GenerateInstaller
 
         // 1) Metadata-API path — canonical, consistent output.
         var (ok, err) = BridgeGate.TrySaveObject(axKind, name, model, xml);
-        if (ok)
-        {
-            RecordBridgeCreate(axKind, name, model);
-            return (InstallOutcome.CreatedViaApi, null, null, warnings);
-        }
+        if (ok) return (InstallOutcome.CreatedViaApi, null, null, warnings);
 
         // 2) Fallback — write the scaffold into the model folder if resolvable.
         var folder = ResolveModelFolder(model);
@@ -666,7 +671,7 @@ internal static class GenerateInstaller
                 // back. Recorded explicitly because no Write ran to derive it.
                 gate.Observe(xml);
                 gate.RecordArtefact(axKind, name, null);
-                RegisterBridgeCreate(gate, axKind, name, installTo!);
+                RecordBridgeCreate(axKind, name, installTo!, RegisterBridgeCreate(gate, axKind, name, installTo!));
                 return Finish(kind, gate, verify, installTo,
                     buildPayload(new EmitResult("bridge", null, null, null)), all);
             }

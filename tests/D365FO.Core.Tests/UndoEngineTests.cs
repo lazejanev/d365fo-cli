@@ -384,6 +384,43 @@ public sealed class UndoEngineTests : IDisposable
     }
 
     [Fact]
+    public void Bridge_create_undo_takes_the_object_out_of_the_project_it_was_registered_in()
+    {
+        // generate --install-to --project goes through the provider, not a file write. Its
+        // journal entry used to carry no project change, so undo deleted the object and left
+        // its <Content> entry behind (found in a live test on a UDE).
+        const string project = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <Project ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+              <PropertyGroup>
+                <Model>MyModel</Model>
+              </PropertyGroup>
+              <ItemGroup>
+                <Folder Include="Classes\" />
+              </ItemGroup>
+            </Project>
+            """;
+        var rnrproj = Path.Combine(_dir, "MyProject.rnrproj");
+        File.WriteAllText(rnrproj, project);
+        var reg = RnrProjRegistry.RegisterInProject(rnrproj, "AxTable", "Foo", "MyModel");
+        Assert.Contains("Foo", File.ReadAllText(rnrproj));
+
+        using var harness = FakeBridge.Create(req => Ok(req, new JsonObject { ["ok"] = true }));
+        var journal = NewJournal();
+        journal.Append(new JournalEntry(
+            Id: Guid.NewGuid().ToString("N"), TimestampUtc: DateTimeOffset.UtcNow, Command: "generate table --install-to",
+            TargetType: JournalTargetType.AotObject, Kind: "table", ObjectName: "Foo", SecondaryKey: null,
+            Model: "MyModel", Operation: JournalOperation.Create, WritePath: JournalWritePath.Bridge,
+            TargetPath: null, PreImage: null, IsTombstone: true, RnrProjDelta: reg.Delta));
+
+        var result = UndoEngine.Undo(journal, 1, dryRun: false, bridgeClientFactory: () => harness.Client);
+
+        Assert.True(result.AllOk);
+        Assert.Null(result.Steps[0].RnrProjWarning);
+        Assert.DoesNotContain("Foo", File.ReadAllText(rnrproj));
+    }
+
+    [Fact]
     public void Bridge_update_undo_calls_updateObject_with_preimage_xml()
     {
         string? calledMethod = null;
