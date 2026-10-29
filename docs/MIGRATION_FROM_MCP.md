@@ -216,7 +216,7 @@ commands. Both surfaces use the same discriminator-based naming.
 
 | MCP tool | CLI command |
 |---|---|
-| `search` (default) | `d365fo search any <q>` |
+| `search` (default) | `d365fo search any <q>` (or just `d365fo search <q>`) |
 | `search` (`queries[]`) | `d365fo search batch <q1> <q2> …` |
 | `batch_get_info` | `d365fo get batch table:CustTable class:X …` (max 10) |
 | `extension_info` (`mode=points`) | `d365fo find extensions <Target>` |

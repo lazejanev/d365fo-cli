@@ -13,6 +13,10 @@ if (profileError is not null)
     return 2;
 }
 
+// Bare `search <QUERY>` / `security <NAME>` run the scope-agnostic sub-command
+// instead of failing with "Unknown command" (see ArgumentShapes).
+cliArgs = ArgumentShapes.Normalize(cliArgs);
+
 var app = CliApp.Build();
 
 try
@@ -29,7 +33,7 @@ catch (CommandParseException ex)
         D365FO.Core.ToolResult<object>.Fail(
             "BAD_INPUT",
             ex.Message,
-            "Run the command with --help to see the options it actually accepts.")));
+            ArgumentShapes.HintFor(cliArgs, ex.Message))));
     return 2;
 }
 catch (Exception ex)
