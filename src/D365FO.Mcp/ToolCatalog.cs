@@ -796,12 +796,17 @@ public static class ToolCatalog
             + "what keeps re-extraction idempotent — handing it one object would delete the rest of that model. "
             + "A custom model takes seconds; naming a large standard model is a minutes-long call, and the "
             + "result reports how long it took. Re-indexing EVERYTHING is `d365fo index refresh` on a shell: "
-            + "it walks every package, which is not something to wait on in a tool call.",
+            + "it walks every package, which is not something to wait on in a tool call.\n"
+            + "Method-body full-text indexing (what makes `find_references` fast) is remembered per model: "
+            + "omit both flags to keep it as it was, `indexSource=true` to add it, `noIndexSource=true` to drop it.",
             Schema(("model", "string", false), ("path", "string", false),
-                   ("packagesPath", "string", false), ("indexSource", "boolean", false)),
-            (h, p) => D365FO.Core.Index.IndexSync.Sync(
-                StrOrNull(p, "model"), StrOrNull(p, "path"), StrOrNull(p, "packagesPath"),
-                databasePath: null, indexSource: Bool(p, "indexSource"))),
+                   ("packagesPath", "string", false), ("indexSource", "boolean", false),
+                   ("noIndexSource", "boolean", false)),
+            (h, p) => D365FO.Core.Index.IndexSync.ConflictingSourceFlags(Bool(p, "indexSource"), Bool(p, "noIndexSource"))
+                ?? D365FO.Core.Index.IndexSync.Sync(
+                    StrOrNull(p, "model"), StrOrNull(p, "path"), StrOrNull(p, "packagesPath"),
+                    databasePath: null,
+                    indexSource: D365FO.Core.Index.IndexSync.SourceChoice(Bool(p, "indexSource"), Bool(p, "noIndexSource")))),
 
         new Descriptor("index_history",
             "Recent ExtractionRuns telemetry (per-model timings). Returns newest first.",

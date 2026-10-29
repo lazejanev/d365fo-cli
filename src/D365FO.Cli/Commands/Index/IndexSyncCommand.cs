@@ -38,12 +38,19 @@ public sealed class IndexSyncCommand : Command<IndexSyncCommand.Settings>
         public string? DatabasePath { get; init; }
 
         [CommandOption("--index-source")]
-        [System.ComponentModel.Description("Also full-text index X++ method bodies, as `index extract --index-source` does.")]
+        [System.ComponentModel.Description("Also full-text index X++ method bodies, as `index extract --index-source` does. Without this or --no-index-source the model keeps what its last extract did.")]
         public bool IndexSource { get; init; }
+
+        [CommandOption("--no-index-source")]
+        [System.ComponentModel.Description("Drop the model's method bodies from MethodSourceFts and stop re-indexing them.")]
+        public bool NoIndexSource { get; init; }
     }
 
     public override int Execute(CommandContext ctx, Settings settings)
     {
+        if (IndexSync.ConflictingSourceFlags(settings.IndexSource, settings.NoIndexSource) is { } conflict)
+            return RenderHelpers.Render(OutputMode.Resolve(settings.Output), conflict);
+
         // A bare TARGET is a model name when it is not a path, and a path when it is — the
         // caller should not have to say which, since one of the two always parses.
         var target = settings.Target?.Trim();
@@ -58,6 +65,6 @@ public sealed class IndexSyncCommand : Command<IndexSyncCommand.Settings>
             path: looksLikePath ? target : null,
             packagesOverride: settings.PackagesPath,
             databasePath: settings.DatabasePath,
-            indexSource: settings.IndexSource));
+            indexSource: IndexSync.SourceChoice(settings.IndexSource, settings.NoIndexSource)));
     }
 }

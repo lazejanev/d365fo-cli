@@ -141,12 +141,18 @@ public sealed class IndexExtractCommand : Command<IndexExtractCommand.Settings>
         public string[]? ExtraPackagesPaths { get; init; }
 
         [CommandOption("--index-source")]
-        [System.ComponentModel.Description("Also full-text index X++ method bodies into MethodSourceFts (opt-in; enlarges the DB). Speeds up `find refs` and enables source search.")]
+        [System.ComponentModel.Description("Also full-text index X++ method bodies into MethodSourceFts (opt-in; enlarges the DB). Speeds up `find refs` and enables source search. Remembered per model: a later extract that passes neither this nor --no-index-source keeps it.")]
         public bool IndexSource { get; init; }
+
+        [CommandOption("--no-index-source")]
+        [System.ComponentModel.Description("Drop the extracted models' method bodies from MethodSourceFts and stop re-indexing them on later extracts.")]
+        public bool NoIndexSource { get; init; }
     }
 
     public override int Execute(CommandContext ctx, Settings settings)
     {
+        if (IndexSync.ConflictingSourceFlags(settings.IndexSource, settings.NoIndexSource) is { } conflict)
+            return RenderHelpers.Render(OutputMode.Resolve(settings.Output), conflict);
         var cfg = D365FoSettings.FromEnvironment(settings.DatabasePath);
         var extraPaths = MergeExtraPaths(settings.ExtraPackagesPaths, cfg.CustomPackagesPaths);
         return ExtractCore(
@@ -157,9 +163,13 @@ public sealed class IndexExtractCommand : Command<IndexExtractCommand.Settings>
             settings.Since,
             extraPackagesPaths: extraPaths,
             parallelism: settings.Parallelism,
-            indexSource: settings.IndexSource);
+            indexSource: IndexSync.SourceChoice(settings.IndexSource, settings.NoIndexSource));
     }
 
+    /// <param name="indexSource">
+    /// <c>true</c> / <c>false</c> to capture method bodies for every extracted model or none;
+    /// <c>null</c> to keep, per model, what that model's last extract did.
+    /// </param>
     internal static int ExtractCore(
         OutputMode.Kind kind,
         string? packagesOverride,
@@ -169,7 +179,7 @@ public sealed class IndexExtractCommand : Command<IndexExtractCommand.Settings>
         IReadOnlyDictionary<string, string?>? fingerprintsByModel = null,
         int? parallelism = null,
         IReadOnlyList<string>? extraPackagesPaths = null,
-        bool indexSource = false)
+        bool? indexSource = null)
     {
         var cfg = D365FoSettings.FromEnvironment(databaseOverride);
         var root = packagesOverride ?? cfg.PackagesPath;
@@ -187,7 +197,12 @@ public sealed class IndexExtractCommand : Command<IndexExtractCommand.Settings>
         }
 
         var repo = RepoFactory.Create(databaseOverride);
-        var extractor = new MetadataExtractor { CaptureMethodSource = indexSource };
+        // Two extractors rather than one flag, because with no explicit choice the decision is
+        // per model: a model whose bodies were indexed stays indexed, the rest stay lean.
+        var sourceIndexedModels = indexSource is null ? repo.GetSourceIndexedModels() : null;
+        bool CaptureSourceFor(string model) => indexSource ?? sourceIndexedModels!.Contains(model);
+        var extractor = new MetadataExtractor { CaptureMethodSource = false };
+        var sourceExtractor = new MetadataExtractor { CaptureMethodSource = true };
         var matcher = new ModelMatcher(cfg.CustomModels);
         int modelCount = 0;
         int customCount = 0;
@@ -298,7 +313,8 @@ public sealed class IndexExtractCommand : Command<IndexExtractCommand.Settings>
                             ExtractBatch batch;
                             try
                             {
-                                batch = extractor.ExtractModel(modelDir, model, cfg.LabelLanguages, matcher.IsMatch(model));
+                                batch = (CaptureSourceFor(model) ? sourceExtractor : extractor)
+                                    .ExtractModel(modelDir, model, cfg.LabelLanguages, matcher.IsMatch(model));
                             }
                             catch { return; }
                             parseSw.Stop();
@@ -316,7 +332,8 @@ public sealed class IndexExtractCommand : Command<IndexExtractCommand.Settings>
                 {
                     onStart?.Invoke(batch.Model);
                     var writeSw = System.Diagnostics.Stopwatch.StartNew();
-                    repo.ApplyExtract(batch, fp, indexSource);
+                    var sourceIndexed = CaptureSourceFor(batch.Model);
+                    repo.ApplyExtract(batch, fp, sourceIndexed);
                     writeSw.Stop();
                     var elapsedMs = parseMs + writeSw.ElapsedMilliseconds;
                     repo.RecordExtractionRun(batch.Model, startedUtc, elapsedMs,
@@ -335,6 +352,7 @@ public sealed class IndexExtractCommand : Command<IndexExtractCommand.Settings>
                         menuItems = batch.MenuItems.Count,
                         coc = batch.CocExtensions.Count,
                         labels = batch.Labels.Count,
+                        sourceIndexed,
                         elapsedMs,
                         // Split out so a slow extract can be attributed without a profiler:
                         // parse is XML off the packages folder, write is ApplyExtract's
@@ -521,12 +539,18 @@ public sealed class IndexRefreshCommand : Command<IndexRefreshCommand.Settings>
         public string[]? ExtraPackagesPaths { get; init; }
 
         [CommandOption("--index-source")]
-        [System.ComponentModel.Description("Also full-text index X++ method bodies into MethodSourceFts (opt-in; enlarges the DB). Speeds up `find refs` and enables source search.")]
+        [System.ComponentModel.Description("Also full-text index X++ method bodies into MethodSourceFts (opt-in; enlarges the DB). Speeds up `find refs` and enables source search. Remembered per model: a later extract that passes neither this nor --no-index-source keeps it.")]
         public bool IndexSource { get; init; }
+
+        [CommandOption("--no-index-source")]
+        [System.ComponentModel.Description("Drop the extracted models' method bodies from MethodSourceFts and stop re-indexing them on later extracts.")]
+        public bool NoIndexSource { get; init; }
     }
 
     public override int Execute(CommandContext ctx, Settings settings)
     {
+        if (IndexSync.ConflictingSourceFlags(settings.IndexSource, settings.NoIndexSource) is { } conflict)
+            return RenderHelpers.Render(OutputMode.Resolve(settings.Output), conflict);
         var since = settings.Since;
         IReadOnlyDictionary<string, string?>? fingerprints = null;
         if (!settings.Force)
@@ -564,7 +588,7 @@ public sealed class IndexRefreshCommand : Command<IndexRefreshCommand.Settings>
             fingerprints,
             parallelism: settings.Parallelism,
             extraPackagesPaths: extraPaths,
-            indexSource: settings.IndexSource);
+            indexSource: IndexSync.SourceChoice(settings.IndexSource, settings.NoIndexSource));
     }
 }
 
