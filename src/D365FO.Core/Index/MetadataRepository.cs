@@ -732,11 +732,39 @@ public sealed partial class MetadataRepository
     /// Each indexed model's <see cref="SourceIndexLevel"/>: which method bodies its last extract
     /// put into <c>MethodSourceFts</c>. Models at <see cref="SourceIndexLevel.None"/> are included.
     /// </summary>
-    public IReadOnlyDictionary<string, int> GetSourceIndexLevels()
+    public IReadOnlyDictionary<string, int> GetSourceIndexLevels() =>
+        GetModelSourceStates().ToDictionary(r => r.Name, r => r.Level, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Every indexed model with what a method-body search needs to know about it: whether it is
+    /// custom (<c>Models.IsCustom</c>) and its <see cref="SourceIndexLevel"/>.
+    /// </summary>
+    public IReadOnlyList<ModelSourceState> GetModelSourceStates()
     {
         using var conn = OpenReadOnly();
-        return conn.Query<(string Name, long Level)>("SELECT Name, SourceIndexed FROM Models")
-            .ToDictionary(r => r.Name, r => (int)r.Level, StringComparer.OrdinalIgnoreCase);
+        return conn.Query<(string Name, long IsCustom, long Level)>(
+                "SELECT Name, IsCustom, SourceIndexed FROM Models ORDER BY Name")
+            .Select(r => new ModelSourceState(r.Name, r.IsCustom != 0, (int)r.Level))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Whether <paramref name="name"/> is a method or field name anywhere in the index — the
+    /// members <see cref="Resolve(string)"/> does not cover.
+    /// </summary>
+    public bool IsKnownMemberName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        using var conn = OpenReadOnly();
+        return conn.ExecuteScalar<long>(@"
+            SELECT COUNT(1) FROM (
+                SELECT 1 FROM Methods      WHERE Name = @name COLLATE NOCASE
+                UNION ALL
+                SELECT 1 FROM TableMethods WHERE Name = @name COLLATE NOCASE
+                UNION ALL
+                SELECT 1 FROM TableFields  WHERE Name = @name COLLATE NOCASE
+                LIMIT 1
+            )", new { name }) > 0;
     }
 
     /// <summary>
@@ -747,9 +775,18 @@ public sealed partial class MetadataRepository
     /// regardless should fall back to scanning source on disk. The
     /// <see cref="MethodSourceMatch.Snippet"/> highlights the matched region.
     /// </summary>
-    public IReadOnlyList<MethodSourceMatch> SearchMethodSource(string query, int limit = 100, string? model = null, string? kind = null)
+    public IReadOnlyList<MethodSourceMatch> SearchMethodSource(string query, int limit = 100, string? model = null, string? kind = null) =>
+        SearchMethodSource(query, limit, model is null ? null : [model], kind, objectName: null);
+
+    /// <summary>
+    /// <see cref="SearchMethodSource(string, int, string?, string?)"/> over a set of models
+    /// (null: every model), optionally narrowed to the methods of one object.
+    /// </summary>
+    public IReadOnlyList<MethodSourceMatch> SearchMethodSource(
+        string query, int limit, IReadOnlyCollection<string>? models, string? kind, string? objectName)
     {
         limit = ClampLimit(limit, 100);
+        if (models is { Count: 0 }) return Array.Empty<MethodSourceMatch>();
         using var conn = OpenReadOnly();
         try
         {
@@ -764,14 +801,23 @@ public sealed partial class MetadataRepository
                        snippet(MethodSourceFts, 0, '«', '»', ' … ', 12) AS Snippet
                 FROM MethodSourceFts
                 WHERE MethodSourceFts MATCH $q
-                  AND ($model IS NULL OR Model = $model)
+                  {ModelFilter}
                   AND ($kind  IS NULL OR Kind  = $kind)
+                  AND ($obj   IS NULL OR ObjectName = $obj COLLATE NOCASE)
                 ORDER BY rank
                 LIMIT $limit";
+            var modelFilter = "";
+            if (models is not null)
+            {
+                var names = models.ToList();
+                modelFilter = "AND Model IN (" + string.Join(", ", names.Select((_, i) => "$m" + i)) + ")";
+                for (var i = 0; i < names.Count; i++) cmd.Parameters.AddWithValue("$m" + i, names[i]);
+            }
+            cmd.CommandText = cmd.CommandText.Replace("{ModelFilter}", modelFilter, StringComparison.Ordinal);
             cmd.Parameters.AddWithValue("$q", query);
             cmd.Parameters.AddWithValue("$limit", limit);
-            cmd.Parameters.AddWithValue("$model", (object?)model ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$kind", (object?)kind ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$obj", (object?)objectName ?? DBNull.Value);
             using var reader = cmd.ExecuteReader();
             var results = new List<MethodSourceMatch>();
             while (reader.Read())
