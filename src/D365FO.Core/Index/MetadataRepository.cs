@@ -274,6 +274,8 @@ public sealed partial class MetadataRepository
             // "never indexed" and drop the rows the column exists to keep.
             try
             {
+                // Level 1, not 2: builds before v20 put class and table bodies in the index,
+                // never form bodies, so their forms still have to be read from disk.
                 conn.Execute(@"UPDATE Models SET SourceIndexed = 1
                                WHERE Name IN (SELECT DISTINCT Model FROM MethodSourceFts)", transaction: tx);
             }
@@ -713,15 +715,28 @@ public sealed partial class MetadataRepository
     public bool IsSourceIndexed(string model)
     {
         using var conn = OpenReadOnly();
-        return conn.ExecuteScalar<long?>("SELECT SourceIndexed FROM Models WHERE Name=@m", new { m = model }) == 1;
+        return conn.ExecuteScalar<long?>("SELECT SourceIndexed FROM Models WHERE Name=@m", new { m = model })
+            is >= SourceIndexLevel.ClassesAndTables;
     }
 
     /// <summary>The models whose last extract full-text indexed their method bodies.</summary>
     public IReadOnlySet<string> GetSourceIndexedModels()
     {
         using var conn = OpenReadOnly();
-        return conn.Query<string>("SELECT Name FROM Models WHERE SourceIndexed = 1")
+        return conn.Query<string>("SELECT Name FROM Models WHERE SourceIndexed >= @l",
+                new { l = SourceIndexLevel.ClassesAndTables })
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Each indexed model's <see cref="SourceIndexLevel"/>: which method bodies its last extract
+    /// put into <c>MethodSourceFts</c>. Models at <see cref="SourceIndexLevel.None"/> are included.
+    /// </summary>
+    public IReadOnlyDictionary<string, int> GetSourceIndexLevels()
+    {
+        using var conn = OpenReadOnly();
+        return conn.Query<(string Name, long Level)>("SELECT Name, SourceIndexed FROM Models")
+            .ToDictionary(r => r.Name, r => (int)r.Level, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -2539,7 +2554,7 @@ public sealed partial class MetadataRepository
         try { conn.Execute("DELETE FROM MethodSourceFts WHERE Model=@n", new { n = batch.Model }, tx); }
         catch (Microsoft.Data.Sqlite.SqliteException) { indexMethodSource = false; }
         conn.Execute("UPDATE Models SET SourceIndexed=@s WHERE ModelId=@m",
-            new { s = indexMethodSource ? 1 : 0, m = modelId }, tx);
+            new { s = indexMethodSource ? SourceIndexLevel.WithForms : SourceIndexLevel.None, m = modelId }, tx);
         // Labels are keyed by file+lang, not model; we delete by file instead.
         foreach (var file in batch.Labels.Select(l => l.File).Distinct(StringComparer.OrdinalIgnoreCase))
             conn.Execute("DELETE FROM Labels WHERE LabelFile=@f", new { f = file }, tx);
@@ -2857,6 +2872,8 @@ public sealed partial class MetadataRepository
                              new { f = formId, n = ds.Name, t = ds.Table, o = idx, j = ds.JoinSource }, tx);
                 idx++;
             }
+            foreach (var mb in f.MethodBodies)
+                IndexBody("Form", f.Name, f.SourcePath, mb.Name, mb.Body);
         }
 
         foreach (var ext in batch.Extensions)
