@@ -92,4 +92,41 @@ public sealed class ScaffoldFileWriterAtomicityTests : IDisposable
             $"target holds an unexpected document: {name}");
         Assert.Empty(Directory.GetFiles(_dir, "*.tmp"));
     }
+
+    [Fact]
+    public void Save_in_place_keeps_a_backup_and_leaves_no_staging_file_behind()
+    {
+        var target = Path.Combine(_dir, "InPlace.xml");
+        File.WriteAllText(target, "<AxTable><Name>Before</Name></AxTable>");
+
+        var backup = ScaffoldFileWriter.SaveInPlace(TableDoc("After"), target);
+
+        Assert.Equal("After", XDocument.Load(target).Root!.Element("Name")!.Value);
+        Assert.Equal(target + ".bak", backup);
+        Assert.Equal("Before", XDocument.Load(backup!).Root!.Element("Name")!.Value);
+        Assert.Empty(Directory.GetFiles(_dir, "*.tmp"));
+    }
+
+    [Fact]
+    public void Save_in_place_racing_one_path_never_leaves_the_target_missing_or_torn()
+    {
+        // The in-place editors (form methods, role --add-to) used to stage through the fixed
+        // "<target>.tmp" and move twice without a rollback — the shape this class was written
+        // against. They now share the scaffolder's stage-then-rename.
+        var target = Path.Combine(_dir, "ContendedInPlace.xml");
+        File.WriteAllText(target, "<AxTable><Name>Seed</Name></AxTable>");
+
+        Parallel.For(0, 24, Bounded, i =>
+        {
+            try { ScaffoldFileWriter.SaveInPlace(TableDoc($"Racer{i:D2}"), target); }
+            catch (IOException) { /* lost the rename race — acceptable */ }
+            catch (UnauthorizedAccessException) { /* lost the .bak race — acceptable */ }
+        });
+
+        Assert.True(File.Exists(target));
+        var name = XDocument.Load(target).Root!.Element("Name")!.Value;
+        Assert.True(name == "Seed" || name.StartsWith("Racer", StringComparison.Ordinal),
+            $"target holds an unexpected document: {name}");
+        Assert.Empty(Directory.GetFiles(_dir, "*.tmp"));
+    }
 }

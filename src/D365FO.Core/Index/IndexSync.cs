@@ -98,11 +98,19 @@ public static class IndexSync
         }
 
         var fingerprint = ComputeFingerprint(modelRoot, cfg.LabelLanguages);
-        repo.ApplyExtract(batch, fingerprint, indexSource);
-        sw.Stop();
-        repo.RecordExtractionRun(batch.Model, startedUtc, sw.ElapsedMilliseconds,
-            batch.Tables.Count, batch.Classes.Count, batch.Edts.Count,
-            batch.Enums.Count, batch.Labels.Count, batch.IsCustom);
+
+        // Parsing needs no lock; replacing the model's rows does. Taken after the parse so a
+        // sync waiting behind a refresh holds nothing while it reads XML.
+        using (var writeLock = IndexWriteLock.TryAcquire(repo.DatabasePath))
+        {
+            if (writeLock is null) return IndexWriteLock.Busy(repo.DatabasePath);
+
+            repo.ApplyExtract(batch, fingerprint, indexSource);
+            sw.Stop();
+            repo.RecordExtractionRun(batch.Model, startedUtc, sw.ElapsedMilliseconds,
+                batch.Tables.Count, batch.Classes.Count, batch.Edts.Count,
+                batch.Enums.Count, batch.Labels.Count, batch.IsCustom);
+        }
 
         return ToolResult<object>.Success(new
         {
