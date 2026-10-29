@@ -419,5 +419,31 @@ namespace D365FO.Core.ObjectTypes
                     list.Add(_all[i].AotSubfolder);
             return list.ToArray();
         }
+
+        private static readonly Lazy<HashSet<string>> s_markerSet = new(() =>
+            new HashSet<string>(ModelMarkerFolders(), StringComparer.OrdinalIgnoreCase));
+
+        /// <summary>
+        /// Whether <paramref name="dir"/> holds at least one <see cref="ModelMarkerFolders"/> folder,
+        /// i.e. is a model root.
+        /// </summary>
+        /// <remarks>
+        /// One listing of the folder, not one <c>Directory.Exists</c> per marker. A packages root has
+        /// about 1,500 package subfolders (<c>bin</c>, <c>Descriptor</c>, <c>Resources</c>, …) that are
+        /// not models, and each of those used to cost a failed probe for every marker: about 100,000
+        /// file-system calls and about 14 s per walk on a real UDE installation, paid by every caller that
+        /// lists the model folders. Matched case-insensitively, as the Windows probe did.
+        /// </remarks>
+        public static bool IsModelDirectory(string dir)
+        {
+            try
+            {
+                foreach (var sub in System.IO.Directory.EnumerateDirectories(dir))
+                    if (s_markerSet.Value.Contains(System.IO.Path.GetFileName(sub))) return true;
+            }
+            catch (System.IO.IOException) { }
+            catch (System.UnauthorizedAccessException) { }
+            return false;
+        }
     }
 }
