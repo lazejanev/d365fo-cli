@@ -19,6 +19,17 @@ was ported from.
 
 ## [Unreleased]
 
+### Fixed — `D365FO_BRIDGE_ENABLED=0` now switches the bridge off for writes too
+
+The write, delete, verify and model-folder helpers in `BridgeGate` only asked whether the bridge
+executable existed. With the flag set to `0`, `doctor` reported the bridge disabled while
+`generate --install-to` still created the object through the live metadata provider, which also
+writes its compiled copy under the runtime PackagesLocalDirectory. Found in a live test that
+pointed a throwaway profile at a scratch model store.
+
+- An explicit `0` / `false` is now honoured by every `BridgeGate` helper. An unset flag keeps the
+  old behaviour, so an installation that relies on finding the executable is not broken.
+
 ### Fixed — lookups that answered nothing, or a different question, without saying so
 
 Found by an outside benchmark of CLI vs the XRef DB vs grep for D365 lookups, where 3 of 24 runs
