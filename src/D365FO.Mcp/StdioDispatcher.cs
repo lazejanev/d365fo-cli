@@ -236,7 +236,7 @@ public sealed class StdioDispatcher
         object raw;
         try
         {
-            raw = descriptor.Invoke(_handlers, args);
+            raw = ToolCatalog.InvokeWithIndexRefresh(descriptor, _handlers, args);
         }
         catch (Exception ex)
         {

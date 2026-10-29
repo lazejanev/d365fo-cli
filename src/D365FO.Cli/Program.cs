@@ -13,11 +13,16 @@ if (profileError is not null)
     return 2;
 }
 
+// Global `--no-refresh`: a write re-indexes the model it touched before its result is
+// rendered (see IndexAutoRefresh). Peeled off the same way, so every write command honours it.
+var (refreshArgs, noRefresh) = AutoRefreshArgs.Strip(cliArgs);
+
 var app = CliApp.Build();
 
+using var autoRefresh = D365FO.Core.Index.IndexAutoRefresh.BeginScope(enabled: !noRefresh);
 try
 {
-    return await app.RunAsync(cliArgs);
+    return await app.RunAsync(refreshArgs);
 }
 catch (CommandParseException ex)
 {
