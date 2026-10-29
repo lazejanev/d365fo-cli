@@ -122,4 +122,82 @@ public sealed class RnrProjRegistryTests : IDisposable
 
         Assert.Equal(rnrproj, found);
     }
+    private const string VisualStudioProject =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n" +
+        "<Project xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\r\n" +
+        "  <PropertyGroup>\r\n    <Model>MyModel</Model>\r\n  </PropertyGroup>\r\n" +
+        "  <ItemGroup>\r\n    <Folder Include=\"Classes\\\"/>\r\n  </ItemGroup>\r\n" +
+        "  <ItemGroup>\r\n    <Content Include=\"AxClass\\Existing\">\r\n      <SubType>Content</SubType>\r\n" +
+        "      <Name>Existing</Name>\r\n      <Link>Classes\\Existing</Link>\r\n    </Content>\r\n  </ItemGroup>\r\n" +
+        "</Project>\r\n";
+
+    [Fact]
+    public void RegisterInProject_writes_the_item_shape_visual_studio_writes()
+    {
+        var rnrproj = Path.Combine(_dir, "Projects", "MyProject.rnrproj");
+        Directory.CreateDirectory(Path.GetDirectoryName(rnrproj)!);
+        File.WriteAllText(rnrproj, VisualStudioProject);
+
+        var reg = RnrProjRegistry.RegisterInProject(rnrproj, "AxWorkflowTemplate", "MyWorkflow", "MyModel");
+
+        Assert.True(reg.Added);
+        Assert.Equal(@"AxWorkflowTemplate\MyWorkflow", reg.Include);
+        var doc = System.Xml.Linq.XDocument.Load(rnrproj);
+        System.Xml.Linq.XNamespace ns = "http://schemas.microsoft.com/developer/msbuild/2003";
+        var item = doc.Descendants(ns + "Content").Single(e => (string?)e.Attribute("Include") == reg.Include);
+        Assert.Equal(@"Workflow Types\MyWorkflow", item.Element(ns + "Link")?.Value);
+        // Listed beside the existing objects, not among the <Folder> entries.
+        Assert.Same(doc.Descendants(ns + "Content").First().Parent, item.Parent);
+        Assert.Contains("\r\n    <Content Include=\"AxWorkflowTemplate\\MyWorkflow\">", File.ReadAllText(rnrproj));
+    }
+
+    [Fact]
+    public void RegisterInProject_does_not_list_an_object_twice()
+    {
+        var rnrproj = Path.Combine(_dir, "MyProject.rnrproj");
+        File.WriteAllText(rnrproj, VisualStudioProject);
+
+        var reg = RnrProjRegistry.RegisterInProject(rnrproj, "AxClass", "Existing", "MyModel");
+
+        Assert.False(reg.Added);
+        Assert.Null(reg.Delta);
+        Assert.Equal(VisualStudioProject, File.ReadAllText(rnrproj));
+    }
+
+    [Fact]
+    public void RegisterInProject_refuses_an_object_of_another_model()
+    {
+        var rnrproj = Path.Combine(_dir, "MyProject.rnrproj");
+        File.WriteAllText(rnrproj, VisualStudioProject);
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => RnrProjRegistry.RegisterInProject(rnrproj, "AxClass", "Other", "SomeOtherModel"));
+
+        Assert.Contains("MyModel", ex.Message);
+        Assert.Equal(VisualStudioProject, File.ReadAllText(rnrproj));
+    }
+
+    [Fact]
+    public void RegisterInProject_keeps_the_compile_shape_of_a_project_that_uses_it()
+    {
+        var rnrproj = Path.Combine(_dir, "MyProject.rnrproj");
+        File.WriteAllText(rnrproj, ProjectXml);
+
+        var reg = RnrProjRegistry.RegisterInProject(rnrproj, "AxClass", "NewClass");
+
+        Assert.Equal(@"AxClass\NewClass.xml", reg.Include);
+        Assert.Contains("<Compile Include=\"AxClass\\NewClass.xml\"", File.ReadAllText(rnrproj));
+    }
+
+    [Fact]
+    public void Undo_of_a_project_registration_leaves_the_project_as_it_was()
+    {
+        var rnrproj = Path.Combine(_dir, "MyProject.rnrproj");
+        File.WriteAllText(rnrproj, VisualStudioProject);
+
+        var reg = RnrProjRegistry.RegisterInProject(rnrproj, "AxClass", "NewClass", "MyModel");
+        Assert.True(RnrProjRegistry.Invert(reg.Delta!));
+
+        Assert.Equal(VisualStudioProject, File.ReadAllText(rnrproj));
+    }
 }

@@ -150,9 +150,7 @@ public static class UndoEngine
         // D365FO_PACKAGES_PATH — or hand-edited — would otherwise let `undo` delete or rewrite
         // files anywhere on disk.
         var cfg = D365FoSettings.FromEnvironment();
-        PathGuard.EnsureWithinBoundary(
-            entry.TargetPath,
-            new[] { cfg.PackagesPath, cfg.WorkspacePath }.Concat(cfg.CustomPackagesPaths).ToArray());
+        PathGuard.EnsureWithinBoundary(entry.TargetPath, cfg.WriteRoots);
 
         string? rnrWarn = null;
         switch (entry.Operation)
