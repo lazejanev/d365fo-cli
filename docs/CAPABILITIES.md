@@ -130,7 +130,8 @@ find extensions <target>              — All object extensions
 find handlers <object>                — Event subscribers
 find relations <table>                — FK relations
 find refs <needle>                    — References inside method bodies (FTS5 when `--index-source` was used, else on-demand source scan)
-find refs --xref                      — Path/line/kind via DYNAMICSXREFDB
+find refs --xref                      — Path/line/kind via DYNAMICSXREFDB; refuses an empty answer when the
+                                        symbol's module has no rows there, and names the build that fills it
 find form-patterns [--pattern P]      — Form pattern histogram / filter
 find batch-jobs [--model M]           — RunBaseBatch subclasses
 ```
@@ -628,6 +629,7 @@ Wraps the Microsoft tools Visual Studio uses.
 
 ```powershell
 d365fo build --project path/to/MyModel.rnrproj   # LabelC + xppc; or --model MyModel [--incremental]
+d365fo build --model MyModel --xref              # also write DYNAMICSXREFDB (xppc -xref), what find refs --xref reads
 d365fo sync --full
 d365fo test run --suite MyModel.Tests
 d365fo bp check --model MyModel

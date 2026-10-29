@@ -195,6 +195,82 @@ ORDER BY srcName.Path";
         }
 
         /// <summary>
+        /// Whether the database holds any name for each of <paramref name="modules"/>. A module
+        /// that was never compiled with <c>xppc -xref</c> has no rows, and every reference
+        /// question about a symbol it declares then comes back empty for that reason alone.
+        /// One existence probe per module, so it stays cheap on a database that carries the
+        /// whole standard application.
+        /// </summary>
+        internal static JsonObject ModuleCoverage(List<string> modules)
+        {
+            var result = new JsonObject();
+            var items = new JsonArray();
+            if (modules == null || modules.Count == 0)
+            {
+                result["ok"] = true;
+                result["modules"] = items;
+                return result;
+            }
+
+            try
+            {
+                using (var c = new SqlConnection(ConnectionString))
+                {
+                    c.Open();
+                    using (var cmd = c.CreateCommand())
+                    {
+                        cmd.CommandTimeout = 30;
+                        var inParams = new List<string>();
+                        for (int i = 0; i < modules.Count; i++)
+                        {
+                            var pn = "@M" + i;
+                            inParams.Add(pn);
+                            cmd.Parameters.Add(new SqlParameter(pn, modules[i]));
+                        }
+                        cmd.CommandText = @"
+SELECT m.Module,
+       CASE WHEN EXISTS (SELECT 1 FROM Names n WHERE n.ModuleId = m.Id) THEN 1 ELSE 0 END AS HasRows
+FROM Modules m
+WHERE m.Module IN (" + string.Join(",", inParams) + ")";
+
+                        var found = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+                        using (var r = cmd.ExecuteReader())
+                        {
+                            while (r.Read())
+                            {
+                                var name = r["Module"] as string;
+                                if (name != null) found[name] = Convert.ToInt32(r["HasRows"]) == 1;
+                            }
+                        }
+
+                        foreach (var module in modules)
+                        {
+                            items.Add(new JsonObject
+                            {
+                                ["module"] = module,
+                                // A module the Modules table does not list has no rows either.
+                                ["hasRows"] = found.TryGetValue(module, out var has) && has,
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return new JsonObject
+                {
+                    ["ok"] = false,
+                    ["error"] = "XREFDB_UNAVAILABLE",
+                    ["message"] = ex.GetType().Name + ": " + ex.Message,
+                };
+            }
+
+            result["ok"] = true;
+            result["modules"] = items;
+            return result;
+        }
+
+        /// <summary>
         /// Resolve a caller-supplied symbol into candidate XREFDB target paths.
         /// Three input shapes are recognised:
         /// <list type="bullet">

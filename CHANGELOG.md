@@ -19,6 +19,26 @@ was ported from.
 
 ## [Unreleased]
 
+### Added — `build --xref` fills the cross-reference database, and `find refs --xref` says when it is empty
+
+`find refs --xref` on a custom symbol failed `XREF_UNAVAILABLE … did not respond within 10s`. Two causes:
+nothing writes DYNAMICSXREFDB for a custom model on a developer machine (the CLI's own xppc call passed
+no cross-reference switches, and UDE and `pac` deployments do not either), and the bridge gave a query
+over the whole standard application 10 s while the database itself allows 15 s to connect and 30 s to run.
+
+- **`d365fo build --xref`** (MCP `sdlc action=build xref=true`) passes xppc's documented switches
+  (`-xref`, `-xrefSqlServer=`, `-xrefDbName=`, from `xppc.exe -?`) with the server and database read
+  from `D365FO_XREF_CONNECTIONSTRING`, so the build writes where the reader looks. In a multi-model
+  build every model but the last gets `-norecreatecrossrefindexes`, as xppc's help asks. A SQL login
+  in the connection string, or `--engine msbuild`, is refused rather than dropped.
+- **An empty xref answer over a module with no rows is refused**, with the build that fills it:
+  "DYNAMICSXREFDB has 0 rows for module CCTPM … `d365fo build --model CCTPM --xref`". An answer with
+  rows from other modules is kept with a warning, and a failed query over such a module names that
+  cause next to the transport error. The coverage probe is one existence query per module, through
+  a new bridge method `xrefCoverage`.
+- **Cross-reference calls get a 60 s bridge budget** instead of the 10 s metadata one, so a slow
+  query ends with the database's own error.
+
 ### Fixed — lookups that answered nothing, or a different question, without saying so
 
 Found by an outside benchmark of CLI vs the XRef DB vs grep for D365 lookups, where 3 of 24 runs

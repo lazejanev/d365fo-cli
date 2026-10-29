@@ -197,7 +197,7 @@ public sealed class FindRefsCommand : Command<FindRefsCommand.Settings>
         public int Limit { get; init; } = 200;
 
         [CommandOption("--xref")]
-        [System.ComponentModel.Description("Answer from DYNAMICSXREFDB via the metadata bridge — compiler-resolved, unlike the text scan. Requires D365FO_BRIDGE_ENABLED=1 and a populated DYNAMICSXREFDB on the VM; fails XREF_UNAVAILABLE rather than falling back to the text scan.")]
+        [System.ComponentModel.Description("Answer from DYNAMICSXREFDB via the metadata bridge — compiler-resolved, unlike the text scan. Requires D365FO_BRIDGE_ENABLED=1 and a DYNAMICSXREFDB that covers the symbol's module (`d365fo build --model <Model> --xref` fills it); fails XREF_UNAVAILABLE rather than falling back to the text scan, and says so when the module has no rows.")]
         public bool Xref { get; init; }
     }
 
@@ -237,8 +237,20 @@ public sealed class FindRefsCommand : Command<FindRefsCommand.Settings>
     private static readonly string[] XrefReferenceKinds =
         ["Declaration", "Set", "Read", "Call", "Reference", "Type", "Extends", "Implements"];
 
-    private static ToolResult<object> FindViaXref(Settings settings)
+    /// <param name="settings">The command's settings.</param>
+    /// <param name="query">The reference query; the bridge's by default. A seam for tests.</param>
+    /// <param name="ownerOf">The model and module declaring a symbol; the index's by default.</param>
+    /// <param name="moduleHasRows">Whether the database covers a module; the bridge's by default.</param>
+    internal static ToolResult<object> FindViaXref(
+        Settings settings,
+        Func<string, string?, int, (System.Text.Json.Nodes.JsonObject? Result, string? Error)>? query = null,
+        Func<string, XrefCoverage.Owner?>? ownerOf = null,
+        Func<string, (bool? HasRows, string? Error)>? moduleHasRows = null)
     {
+        query ??= BridgeGate.FindReferencesViaXref;
+        ownerOf ??= DefaultOwnerOf;
+        moduleHasRows ??= BridgeGate.XrefModuleHasRows;
+
         // DYNAMICSXREFDB is keyed by module (package), and the bridge query takes no model —
         // silently dropping --model would widen the answer to every module.
         if (!string.IsNullOrWhiteSpace(settings.Model))
@@ -260,15 +272,39 @@ public sealed class FindRefsCommand : Command<FindRefsCommand.Settings>
                     "Use one of: " + string.Join(" | ", XrefReferenceKinds) + ". Every xref row's `source` path names the referencing artifact.");
         }
 
-        var (xref, error) = BridgeGate.FindReferencesViaXref(settings.Name, refKind, settings.Limit);
+        var (xref, error) = query(settings.Name, refKind, settings.Limit);
+
+        // Whether the database covers the module that declares the symbol. Asked on both
+        // outcomes: an empty answer from a module that was never compiled with cross-references
+        // is not "no references", and a failed query over such a module has a precise cause
+        // worth naming instead of the transport error.
+        var owner = ownerOf(settings.Name);
+        var (hasRows, _) = owner is null ? ((bool?)null, (string?)null) : moduleHasRows(owner.Module);
+
         if (xref is null)
+        {
+            var precise = XrefCoverage.Assess(0, settings.Name, owner, hasRows);
+            if (precise.Failure is { Error: { } pe })
+                return ToolResult<object>.Fail(pe.Code, pe.Message + " (The reference query itself failed: " + error + ")", pe.Hint);
+
             return ToolResult<object>.Fail(D365FoErrorCodes.XrefUnavailable,
                 "--xref was requested but DYNAMICSXREFDB could not be queried: " + error,
                 "Fix the bridge (`d365fo doctor --output json`), or drop --xref for the text scan over indexed X++ "
                 + "source — it is not compiler-resolved and can miss references made through variables and aliases.");
+        }
+
+        var count = (int?)xref["count"] ?? (xref["items"] as System.Text.Json.Nodes.JsonArray)?.Count ?? 0;
+        var verdict = XrefCoverage.Assess(count, settings.Name, owner, hasRows);
+        if (verdict.Failure is not null) return verdict.Failure;
 
         xref["_source"] = "xrefdb";
-        return ToolResult<object>.Success((object)xref);
+        return ToolResult<object>.Success((object)xref, verdict.Warning is null ? null : [verdict.Warning]);
+    }
+
+    private static XrefCoverage.Owner? DefaultOwnerOf(string symbol)
+    {
+        try { return XrefCoverage.OwnerOf(symbol, RepoFactory.Create()); }
+        catch { return null; } // no index: the coverage check is skipped, never the query
     }
 }
 

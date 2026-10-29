@@ -41,6 +41,55 @@ public static class XppModelBuild
     /// <param name="Project">The <c>.rnrproj</c> it came from, when it came from one.</param>
     public sealed record Target(string Model, string Module, string MetadataRoot, string? Project);
 
+    /// <summary>Where xppc writes cross-references (<c>build --xref</c>).</summary>
+    /// <param name="Server">SQL Server instance, or null for xppc's default (the local server).</param>
+    /// <param name="Database">Database name, or null for xppc's default (<c>DYNAMICSXREFDB</c>).</param>
+    /// <param name="Source">Where the two came from, for the payload.</param>
+    public sealed record XrefTarget(string? Server, string? Database, string Source);
+
+    /// <summary>
+    /// Read the server and database xppc should write cross-references to out of
+    /// <c>D365FO_XREF_CONNECTIONSTRING</c>, the connection string the <c>find refs --xref</c>
+    /// reader uses, so the build writes where the reader looks.
+    /// </summary>
+    /// <remarks>
+    /// xppc takes the target as two switches, <c>-xrefSqlServer=</c> and <c>-xrefDbName=</c>
+    /// (from <c>xppc.exe -?</c>, section CROSSREFERENCE), and connects with Windows
+    /// authentication. A connection string that carries a SQL login cannot be honoured, so it is
+    /// refused rather than quietly ignored. No connection string means xppc's own defaults:
+    /// the local server and <c>DYNAMICSXREFDB</c>, which is also the reader's default.
+    /// </remarks>
+    public static (XrefTarget? Target, string? Problem) ReadXrefTarget(string? connectionString)
+    {
+        if (string.IsNullOrWhiteSpace(connectionString))
+            return (new XrefTarget(null, null, "xppc default (local server, DYNAMICSXREFDB)"), null);
+
+        var builder = new System.Data.Common.DbConnectionStringBuilder();
+        try { builder.ConnectionString = connectionString; }
+        catch (ArgumentException ex)
+        {
+            return (null, "D365FO_XREF_CONNECTIONSTRING is not a valid connection string: " + ex.Message);
+        }
+
+        static string? Value(System.Data.Common.DbConnectionStringBuilder b, params string[] keys)
+        {
+            foreach (var key in keys)
+                if (b.TryGetValue(key, out var v) && v?.ToString() is { Length: > 0 } s) return s.Trim();
+            return null;
+        }
+
+        if (Value(builder, "User ID", "UID", "User") is not null)
+        {
+            return (null,
+                "D365FO_XREF_CONNECTIONSTRING carries a SQL login, and xppc writes cross-references with " +
+                "Windows authentication only (it takes a server and a database name, no credentials).");
+        }
+
+        var server = Value(builder, "Server", "Data Source", "Address", "Addr", "Network Address");
+        var database = Value(builder, "Database", "Initial Catalog");
+        return (new XrefTarget(server, database, "D365FO_XREF_CONNECTIONSTRING"), null);
+    }
+
     private static readonly Regex SolutionProjectRx = new(
         @"""(?<path>[^""]+\.rnrproj)""", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
@@ -115,7 +164,17 @@ public static class XppModelBuild
     /// is the platform (FrameworkDirectory on UDE); when the model lives elsewhere, both roots are
     /// reference folders.
     /// </summary>
-    public static IReadOnlyList<string> XppcArgs(Target target, string packagesRoot, bool incremental)
+    /// <param name="target">The model to compile.</param>
+    /// <param name="packagesRoot">The platform packages root.</param>
+    /// <param name="incremental">Compile only what changed since the last full build.</param>
+    /// <param name="xref">Also update the cross-reference database, or null to leave it alone.</param>
+    /// <param name="lastXrefModel">
+    /// False for every model of a multi-model build but the last: xppc then skips rebuilding the
+    /// cross-reference indexes (<c>-norecreatecrossrefindexes</c>), which its own help asks for
+    /// when a build system compiles several models, and the last model rebuilds them once.
+    /// </param>
+    public static IReadOnlyList<string> XppcArgs(
+        Target target, string packagesRoot, bool incremental, XrefTarget? xref = null, bool lastXrefModel = true)
     {
         var package = Path.Combine(target.MetadataRoot, target.Module);
         var output = Path.Combine(package, "bin");
@@ -133,6 +192,13 @@ public static class XppModelBuild
         args.Add($"-log={Path.Combine(package, "BuildModelResult.log")}");
         args.Add($"-xmlLog={Path.Combine(package, "BuildModelResult.xml")}");
         if (incremental) args.Add("-incremental");
+        if (xref is not null)
+        {
+            args.Add("-xref");
+            if (!string.IsNullOrWhiteSpace(xref.Server)) args.Add($"-xrefSqlServer={xref.Server}");
+            if (!string.IsNullOrWhiteSpace(xref.Database)) args.Add($"-xrefDbName={xref.Database}");
+            if (!lastXrefModel) args.Add("-norecreatecrossrefindexes");
+        }
         return args;
     }
 
@@ -154,8 +220,13 @@ public static class XppModelBuild
     /// Build <paramref name="targets"/> in order, stopping at the first that fails — a model
     /// later in a solution usually references the one before it.
     /// </summary>
+    /// <param name="targets">Models to build, in order.</param>
+    /// <param name="packagesRoot">The platform packages root.</param>
+    /// <param name="incremental">Compile only what changed since the last full build.</param>
+    /// <param name="reason">Why the xppc route was chosen, for the payload.</param>
+    /// <param name="xref">Also update the cross-reference database (<c>build --xref</c>), or null.</param>
     public static ToolResult<object> Build(
-        IReadOnlyList<Target> targets, string packagesRoot, bool incremental, string reason)
+        IReadOnlyList<Target> targets, string packagesRoot, bool incremental, string reason, XrefTarget? xref = null)
     {
         var xppc = BuildTooling.ResolvePackageBinTool("xppc.exe", packagesRoot);
         if (!xppc.Ok)
@@ -173,8 +244,9 @@ public static class XppModelBuild
         var exit = 0;
         var tail = string.Empty;
 
-        foreach (var target in targets)
+        for (var i = 0; i < targets.Count; i++)
         {
+            var target = targets[i];
             var package = Path.Combine(target.MetadataRoot, target.Module);
 
             object? labels = null;
@@ -193,7 +265,7 @@ public static class XppModelBuild
                 }
             }
 
-            var args = XppcArgs(target, packagesRoot, incremental);
+            var args = XppcArgs(target, packagesRoot, incremental, xref, lastXrefModel: i == targets.Count - 1);
             var started = DateTime.UtcNow;
             var (xExit, xOut, xErr, xElapsed) = SdlcRunner.Run(xppc.Path!, args);
             // Only this run's log: a compiler that rejected its arguments writes none, and the
@@ -241,6 +313,12 @@ public static class XppModelBuild
             engineReason = reason,
             compiler = xppc.Path,
             incremental,
+            xref = xref is null ? null : new
+            {
+                server = xref.Server ?? "(local)",
+                database = xref.Database ?? "DYNAMICSXREFDB",
+                source = xref.Source,
+            },
             models,
             errorCount = errors.Count,
             warningCount = warnings.Count,
