@@ -64,6 +64,17 @@ public static class McpServerHost
                 Name = d.Name,
                 Description = d.Description,
                 InputSchema = JsonSerializer.SerializeToElement((JsonNode)d.InputSchema),
+                // The same hints the legacy transport sends (ToolCatalog.AnnotationsFor). Without
+                // them a client on the default transport sees every tool as un-annotated, so it
+                // cannot tell delete_object from search when it decides what to confirm.
+                Annotations = new ToolAnnotations
+                {
+                    Title = (string?)ToolCatalog.AnnotationsFor(d)["title"],
+                    ReadOnlyHint = d.Effect == ToolCatalog.ToolEffect.Read,
+                    DestructiveHint = d.Effect == ToolCatalog.ToolEffect.Destructive,
+                    IdempotentHint = d.Effect != ToolCatalog.ToolEffect.Destructive,
+                    OpenWorldHint = false,
+                },
             }).ToList();
 
     public static McpServerOptions BuildOptions(ToolHandlers handlers, McpServerMode mode = McpServerMode.Full)

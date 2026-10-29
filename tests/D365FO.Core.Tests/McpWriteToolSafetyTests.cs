@@ -80,6 +80,27 @@ public class McpWriteToolSafetyTests : IDisposable
     }
 
     [Fact]
+    public void Default_sdk_transport_advertises_the_same_hints_as_the_legacy_transport()
+    {
+        // The SDK host is what Claude Desktop and most clients get. It listed tools with no
+        // annotations at all, so the corrected hints above never reached them.
+        foreach (var tool in McpServerHost.BuildToolList())
+        {
+            var d = ToolCatalog.All.Single(x => x.Name == tool.Name);
+            var expected = ToolCatalog.AnnotationsFor(d);
+            Assert.NotNull(tool.Annotations);
+            Assert.Equal((bool)expected["readOnlyHint"]!, tool.Annotations!.ReadOnlyHint);
+            Assert.Equal((bool)expected["destructiveHint"]!, tool.Annotations.DestructiveHint);
+            Assert.Equal((bool)expected["idempotentHint"]!, tool.Annotations.IdempotentHint);
+            Assert.Equal((string?)expected["title"], tool.Annotations.Title);
+        }
+
+        var delete = McpServerHost.BuildToolList().Single(t => t.Name == "delete_object");
+        Assert.False(delete.Annotations!.ReadOnlyHint);
+        Assert.True(delete.Annotations.DestructiveHint);
+    }
+
+    [Fact]
     public async Task Index_sync_is_advertised_as_a_write_that_is_not_destructive()
     {
         // It rewrites the index, which the server derives and can rebuild — a client should
