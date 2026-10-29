@@ -122,6 +122,10 @@ public static class McpServerHost
         var body = D365Json.Serialize(raw);
         var isError = raw is ToolResult<object> tr && !tr.Ok;
 
+        // This transport does not dedup-cache, but the cache is process-wide: flush it so a
+        // dispatcher sharing the process never serves a pre-write answer.
+        CallDedup.InvalidateAfter(request.Name);
+
         return new CallToolResult
         {
             IsError = isError,

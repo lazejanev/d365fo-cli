@@ -247,6 +247,10 @@ public sealed class StdioDispatcher
         bool isError = raw is ToolResult<object> tr && !tr.Ok;
         if (dedupKey is not null) CallDedup.Store(dedupKey, body, isError);
 
+        // A write makes every cached read potentially stale: get → modify → get inside the
+        // TTL would otherwise return the pre-write object with "you already have this answer".
+        CallDedup.InvalidateAfter(name);
+
         return Success(idNode, new JsonObject
         {
             ["content"] = new JsonArray
